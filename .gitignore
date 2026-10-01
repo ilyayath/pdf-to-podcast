@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.idea/
+
+# Матеріали завдання (не частина проєкту)
+slides1-tk42.pdf
+task.md
