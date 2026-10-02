@@ -1,16 +1,36 @@
 """Генерація подкасту з PDF за допомогою Google Gemini API.
 
-PDF -> сценарій діалогу (Gemini читає PDF напряму, відповідь — JSON за схемою Script).
+Конвеєр складається з двох викликів API:
+1. PDF -> сценарій діалогу (Gemini читає PDF напряму, відповідь — JSON за схемою Script);
+2. сценарій -> аудіо (Gemini TTS, два голоси в одному запиті).
 """
 
+import io
 import os
+import re
+import wave
 
 from google import genai
 from google.genai import types
 
-from app.schemas import Script, Speaker
+from app.schemas import Line, Script, Speaker
 
 DEFAULT_TEXT_MODEL = "gemini-3.8-flash"
+DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
+
+VOICES = {
+    Speaker.host: "Kore",
+    Speaker.expert: "Puck",
+}
+
+STYLES = {
+    Speaker.host: "українською, дружньо й зацікавлено, жвавий темп",
+    Speaker.expert: "українською, спокійно й упевнено, як лектор, що пояснює просто",
+}
+
+# Довгий сценарій озвучуємо частинами: кожен TTS-запит має обмеження на довжину,
+# а коротші запити надійніші. Аудіо частин потім склеюється.
+CHUNK_CHARS = 2500
 
 SCRIPT_PROMPT = """\
 Ти — сценарист науково-популярного подкасту українською мовою.
@@ -31,6 +51,60 @@ class ConfigError(RuntimeError):
     """API-ключ не задано."""
 
 
+def chunk_lines(lines: list[Line], limit: int | None = None) -> list[list[Line]]:
+    """Ділить репліки на групи, щоб текст кожної групи не перевищував limit символів."""
+    limit = limit or CHUNK_CHARS
+    chunks: list[list[Line]] = []
+    current: list[Line] = []
+    size = 0
+    for line in lines:
+        if current and size + len(line.text) > limit:
+            chunks.append(current)
+            current, size = [], 0
+        current.append(line)
+        size += len(line.text)
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def to_tts_contents(lines: list[Line]) -> types.Content:
+    """Кожна репліка — окрема частина запиту з явно вказаним спікером і стилем мовлення."""
+    return types.Content(
+        role="user",
+        parts=[
+            types.Part(
+                text=line.text,
+                speech_metadata=types.SpeechMetadata(
+                    speaker=line.speaker.value, style=STYLES[line.speaker]
+                ),
+            )
+            for line in lines
+        ],
+    )
+
+
+def _sample_rate(mime_type: str | None) -> int:
+    # Gemini повертає сирий PCM, напр. "audio/L16;codec=pcm;rate=24000"
+    match = re.search(r"rate=(\d+)", mime_type or "")
+    return int(match.group(1)) if match else 24000
+
+
+def voice(name: str) -> types.VoiceConfig:
+    """Один із готових голосів Gemini TTS (Kore, Puck, Charon, Aoede, ...)."""
+    return types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=name))
+
+
+def pcm_to_wav(pcm: bytes, rate: int = 24000) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)  # 16 біт
+        wav.setframerate(rate)
+        wav.writeframes(pcm)
+    return buf.getvalue()
+
+
 class PodcastGenerator:
     def __init__(self, api_key: str | None = None):
         api_key = api_key or os.getenv("GEMINI_API_KEY")
@@ -40,6 +114,7 @@ class PodcastGenerator:
                 "https://aistudio.google.com/apikey і додайте його у файл .env"
             )
         self.text_model = os.getenv("GEMINI_MODEL", DEFAULT_TEXT_MODEL)
+        self.tts_model = os.getenv("GEMINI_TTS_MODEL", DEFAULT_TTS_MODEL)
         self.client = genai.Client(api_key=api_key)
         self.last_tokens: int | None = None
 
@@ -65,3 +140,26 @@ class PodcastGenerator:
         if isinstance(response.parsed, Script):
             return response.parsed
         return Script.model_validate_json(response.text)
+
+    def synthesize(self, script: Script) -> bytes:
+        """Крок 2: сценарій -> WAV. Кожна частина озвучується двома голосами за один запит."""
+        speech = types.SpeechConfig(
+            multi_speaker_voice_config=types.MultiSpeakerVoiceConfig(
+                speaker_voice_configs=[
+                    types.SpeakerVoiceConfig(speaker=speaker.value, voice_config=voice(name))
+                    for speaker, name in VOICES.items()
+                ]
+            )
+        )
+        config = types.GenerateContentConfig(response_modalities=["AUDIO"], speech_config=speech)
+
+        pcm = bytearray()
+        rate = 24000
+        for chunk in chunk_lines(script.lines):
+            response = self.client.models.generate_content(
+                model=self.tts_model, contents=to_tts_contents(chunk), config=config
+            )
+            audio = response.candidates[0].content.parts[0].inline_data
+            rate = _sample_rate(audio.mime_type)
+            pcm += audio.data
+        return pcm_to_wav(bytes(pcm), rate)

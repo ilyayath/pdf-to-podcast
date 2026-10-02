@@ -7,11 +7,11 @@
 from functools import lru_cache
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from google.genai import errors as genai_errors
 
 from app.podcast import ConfigError, PodcastGenerator
-from app.schemas import ScriptResponse
+from app.schemas import Script, ScriptResponse
 
 load_dotenv()
 
@@ -60,3 +60,14 @@ async def create_script(
         raise HTTPException(status_code=413, detail="PDF більший за 15 МБ")
     script = _call(gen.write_script, data, minutes)
     return ScriptResponse(model=gen.text_model, script=script, tokens=gen.last_tokens)
+
+
+@app.post("/api/audio", response_class=Response, responses={200: {"content": {"audio/wav": {}}}})
+def create_audio(script: Script, gen: PodcastGenerator = Depends(get_generator)):
+    """Крок 2: сценарій → аудіо WAV (сценарій можна відредагувати перед озвученням)."""
+    wav = _call(gen.synthesize, script)
+    return Response(
+        content=wav,
+        media_type="audio/wav",
+        headers={"Content-Disposition": 'attachment; filename="podcast.wav"'},
+    )
