@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF → Подкаст</title>
+<style>
+  :root { --brand: #3333b3; --bg: #f5f5fa; --card: #fff; --text: #1a1a2e; --muted: #666; --border: #dcdcea;
+          --host: #e9e9fb; --expert: #e8f4ef; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { background: var(--brand); color: #fff; padding: 16px 24px; }
+  header h1 { margin: 0; font-weight: 400; font-size: 1.5rem; }
+  header p { margin: 4px 0 0; opacity: .85; font-size: .9rem; }
+  main { max-width: 820px; margin: 0 auto; padding: 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 1.05rem; font-weight: 600; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  button { background: var(--brand); color: #fff; border: 0; padding: 10px 20px; border-radius: 6px; cursor: pointer; font: inherit; }
+  button:disabled { opacity: .5; cursor: wait; }
+  select, input[type=file] { font: inherit; }
+  .status { color: var(--muted); font-size: .9rem; margin-top: 8px; min-height: 1.2em; }
+  .status.error { color: #b00020; }
+  .hidden { display: none; }
+  #title { font-size: 1.2rem; font-weight: 600; }
+  #summary { color: var(--muted); margin: 4px 0 12px; }
+  .line { display: grid; grid-template-columns: 70px 1fr; gap: 8px; margin-bottom: 6px; }
+  .line b { font-size: .85rem; padding-top: 8px; }
+  .line textarea { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit; resize: vertical; min-height: 2.4em; }
+  .line.host textarea { background: var(--host); }
+  .line.expert textarea { background: var(--expert); }
+  audio { width: 100%; margin-top: 8px; }
+  a.download { margin-left: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PDF → Подкаст</h1>
+  <p>Статтю чи конспект перетворюємо на розмову двох ведучих: Google Gemini API пише сценарій і озвучує його</p>
+</header>
+<main>
+  <div class="card">
+    <h2>1. Документ</h2>
+    <div class="row">
+      <input id="pdf" type="file" accept="application/pdf">
+      <label>Тривалість
+        <select id="minutes">
+          <option value="2">≈ 2 хв</option>
+          <option value="3" selected>≈ 3 хв</option>
+          <option value="5">≈ 5 хв</option>
+        </select>
+      </label>
+      <button id="btn-script">Написати сценарій</button>
+    </div>
+    <div class="status" id="status-script"></div>
+  </div>
+
+  <div class="card hidden" id="card-script">
+    <h2>2. Сценарій <span style="font-weight:400;color:var(--muted)">(можна редагувати)</span></h2>
+    <div id="title"></div>
+    <div id="summary"></div>
+    <div id="lines"></div>
+    <button id="btn-audio">Озвучити</button>
+    <div class="status" id="status-audio"></div>
+  </div>
+
+  <div class="card hidden" id="card-audio">
+    <h2>3. Подкаст</h2>
+    <audio id="player" controls></audio>
+    <a id="download" class="download" download="podcast.wav">Завантажити WAV</a>
+  </div>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let script = null;
+
+  function setStatus(id, text, isError = false) {
+    $(id).textContent = text;
+    $(id).classList.toggle("error", isError);
+  }
+
+  async function errorText(res) {
+    try { const d = await res.json(); return typeof d.detail === "string" ? d.detail : JSON.stringify(d.detail); }
+    catch { return res.statusText; }
+  }
+
+  function renderScript() {
+    $("title").textContent = script.title;
+    $("summary").textContent = script.summary;
+    $("lines").replaceChildren(...script.lines.map((line, i) => {
+      const row = document.createElement("div");
+      row.className = "line " + (line.speaker === "Олена" ? "host" : "expert");
+      const name = document.createElement("b");
+      name.textContent = line.speaker;
+      const text = document.createElement("textarea");
+      text.value = line.text;
+      text.rows = Math.max(1, Math.ceil(line.text.length / 80));
+      text.addEventListener("input", () => (script.lines[i].text = text.value));
+      row.append(name, text);
+      return row;
+    }));
+    $("card-script").classList.remove("hidden");
+  }
+
+  $("btn-script").addEventListener("click", async () => {
+    const file = $("pdf").files[0];
+    if (!file) return setStatus("status-script", "Оберіть PDF-файл", true);
+    const fd = new FormData();
+    fd.append("pdf", file);
+    fd.append("minutes", $("minutes").value);
+    $("btn-script").disabled = true;
+    setStatus("status-script", "Gemini читає документ і пише сценарій… (10–30 с)");
+    const t0 = performance.now();
+    try {
+      const res = await fetch("/api/script", { method: "POST", body: fd });
+      if (!res.ok) throw new Error(await errorText(res));
+      const data = await res.json();
+      script = data.script;
+      renderScript();
+      setStatus("status-script", `Готово за ${((performance.now() - t0) / 1000).toFixed(1)} с · ${data.model} · ${data.tokens ?? "?"} токенів · ${script.lines.length} реплік`);
+    } catch (e) {
+      setStatus("status-script", "Помилка: " + e.message, true);
+    } finally {
+      $("btn-script").disabled = false;
+    }
+  });
+
+  $("btn-audio").addEventListener("click", async () => {
+    $("btn-audio").disabled = true;
+    setStatus("status-audio", "Озвучую двома голосами… (може зайняти до хвилини)");
+    const t0 = performance.now();
+    try {
+      const res = await fetch("/api/audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(script),
+      });
+      if (!res.ok) throw new Error(await errorText(res));
+      const url = URL.createObjectURL(await res.blob());
+      $("player").src = url;
+      $("download").href = url;
+      $("card-audio").classList.remove("hidden");
+      setStatus("status-audio", `Готово за ${((performance.now() - t0) / 1000).toFixed(1)} с`);
+    } catch (e) {
+      setStatus("status-audio", "Помилка: " + e.message, true);
+    } finally {
+      $("btn-audio").disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

@@ -39,6 +39,12 @@ def client():
 
 # ---------- REST API ----------
 
+def test_index_served(client):
+    res = client.get("/")
+    assert res.status_code == 200
+    assert "Подкаст" in res.text
+
+
 def test_script_from_pdf(client, gen):
     gen.write_script.return_value = SCRIPT
     res = client.post(

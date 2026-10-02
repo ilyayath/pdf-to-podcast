@@ -5,9 +5,12 @@
 """
 
 from functools import lru_cache
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from google.genai import errors as genai_errors
 
 from app.podcast import ConfigError, PodcastGenerator
@@ -15,6 +18,7 @@ from app.schemas import Script, ScriptResponse
 
 load_dotenv()
 
+STATIC_DIR = Path(__file__).parent / "static"
 MAX_PDF_BYTES = 15 * 1024 * 1024  # inline-запит до Gemini обмежений ~20 МБ
 
 app = FastAPI(
@@ -22,6 +26,7 @@ app = FastAPI(
     description="Перетворює PDF-документ на аудіоподкаст двох ведучих через Google Gemini API",
     version="1.0.0",
 )
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @lru_cache
@@ -39,6 +44,11 @@ def _call(fn, *args):
     except genai_errors.APIError as exc:
         status = exc.code if isinstance(exc.code, int) and 400 <= exc.code < 600 else 502
         raise HTTPException(status_code=status, detail=f"Gemini API: {exc.message}") from exc
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/api/health")
