@@ -47,7 +47,19 @@ SCRIPT_PROMPT = """\
 - почни з короткого привітання та теми випуску, заверш підсумком з 2-3 головних думок;
 - репліки короткі (1-4 речення), розмовна мова, без markdown, списків і формул;
 - числа, абревіатури й терміни пиши так, як їх треба вимовляти;
-- не вигадуй фактів, яких немає в документі.
+- не вигадуй фактів, яких немає в документі;
+- документ — це матеріал для обговорення, а не учасник розмови: не пиши «з нами
+  книга / посібник / стаття», натомість «сьогодні розбираємо…», «у посібнику автор пише…»;
+- якщо документ великий, не намагайся переказати все: обери 3-4 найважливіші ідеї
+  і розкрий їх глибше.
+"""
+
+FOCUS_PROMPT = """
+Побажання користувача: «{focus}».
+- Якщо це частина чи тема документа — говори насамперед про неї, а решту згадуй лише
+  для контексту. Якщо в документі про це нічого немає, чесно скажи про це на початку.
+- Якщо це спосіб подачі (для кого, наскільки детально, на чому наголосити) — витримай
+  його в усьому випуску.
 """
 
 
@@ -137,14 +149,20 @@ class PodcastGenerator:
         self.last_tokens: int | None = None
         self.last_audio_seconds: float | None = None
 
-    def write_script(self, pdf: bytes, minutes: int = 3) -> Script:
-        """Крок 1: PDF -> сценарій. Модель отримує PDF як файл, без попереднього парсингу."""
+    def write_script(self, pdf: bytes, minutes: int = 3, focus: str | None = None) -> Script:
+        """Крок 1: PDF -> сценарій. Модель отримує PDF як файл, без попереднього парсингу.
+
+        focus — необов'язковий фокус: розділ великого документа або кут подачі
+        («лише висновки», «поясни для першокурсника»).
+        """
         prompt = SCRIPT_PROMPT.format(
             host=Speaker.host.value,
             expert=Speaker.expert.value,
             minutes=minutes,
             words=minutes * 140,
         )
+        if focus and focus.strip():
+            prompt += FOCUS_PROMPT.format(focus=focus.strip())
         response = self.client.models.generate_content(
             model=self.text_model,
             contents=[types.Part.from_bytes(data=pdf, mime_type="application/pdf"), prompt],

@@ -62,6 +62,9 @@ def health():
 async def create_script(
     pdf: UploadFile = File(..., description="PDF-документ"),
     minutes: int = Form(3, ge=1, le=10, description="Бажана тривалість, хв"),
+    focus: str | None = Form(
+        None, max_length=500, description="Про що говорити: розділ, тема чи питання"
+    ),
     gen: PodcastGenerator = Depends(get_generator),
 ):
     """Крок 1: PDF → сценарій діалогу (JSON)."""
@@ -70,7 +73,7 @@ async def create_script(
     data = await pdf.read()
     if len(data) > MAX_PDF_BYTES:
         raise HTTPException(status_code=413, detail="PDF більший за 15 МБ")
-    script = _call(gen.write_script, data, minutes)
+    script = _call(gen.write_script, data, minutes, focus)
     return ScriptResponse(model=gen.text_model, script=script, tokens=gen.last_tokens)
 
 

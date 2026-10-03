@@ -63,7 +63,17 @@ def test_script_from_pdf(client, gen):
     body = res.json()
     assert body["script"]["title"] == SCRIPT.title
     assert body["tokens"] == 1234
-    gen.write_script.assert_called_once_with(b"%PDF-1.4 fake", 5)
+    gen.write_script.assert_called_once_with(b"%PDF-1.4 fake", 5, None)
+
+
+def test_script_passes_focus(client, gen):
+    gen.write_script.return_value = SCRIPT
+    client.post(
+        "/api/script",
+        files={"pdf": ("book.pdf", b"%PDF", "application/pdf")},
+        data={"focus": "розділ 3, ПІД-регулятор"},
+    )
+    gen.write_script.assert_called_once_with(b"%PDF", 3, "розділ 3, ПІД-регулятор")
 
 
 def test_script_rejects_non_pdf(client, gen):
@@ -190,3 +200,17 @@ def test_pcm_to_mp3_is_smaller_than_wav():
     mp3 = pcm_to_mp3(pcm)
     assert mp3[:3] == b"ID3" or mp3[0] == 0xFF  # заголовок MP3
     assert len(mp3) < len(pcm_to_wav(pcm)) / 4
+
+
+@pytest.mark.parametrize("focus, expected", [(None, False), ("  ", False), ("розділ 3", True)])
+def test_write_script_adds_focus_only_when_given(focus, expected):
+    gen = _generator_with_fake_client()
+    gen.client.models.generate_content.return_value = MagicMock(
+        parsed=SCRIPT, text="", usage_metadata=None
+    )
+
+    gen.write_script(b"%PDF", focus=focus)
+
+    prompt = gen.client.models.generate_content.call_args.kwargs["contents"][1]
+    assert ("«розділ 3»" in prompt) is expected
+    assert "не пиши «з нами" in prompt  # документ не «гість» випуску

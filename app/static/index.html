@@ -31,6 +31,10 @@
   .line.expert textarea { background: var(--expert); }
   audio { width: 100%; margin-top: 8px; }
   a.download { margin-left: 8px; }
+  label.focus { display: block; margin-top: 12px; font-size: .9rem; }
+  label.focus span { color: var(--muted); }
+  label.focus input { display: block; width: 100%; margin-top: 4px; padding: 8px 10px; font: inherit;
+                      border: 1px solid var(--border); border-radius: 6px; }
 </style>
 </head>
 <body>
@@ -52,6 +56,10 @@
       </label>
       <button id="btn-script">Написати сценарій</button>
     </div>
+    <label class="focus">Про що говорити <span>(необов'язково)</span>
+      <input id="focus" type="text" maxlength="500"
+             placeholder="Напр.: розділ 3, ПІД-регулятор · лише висновки · поясни для першокурсника">
+    </label>
     <div class="status" id="status-script"></div>
   </div>
 
@@ -108,6 +116,7 @@
     const fd = new FormData();
     fd.append("pdf", file);
     fd.append("minutes", $("minutes").value);
+    if ($("focus").value.trim()) fd.append("focus", $("focus").value.trim());
     $("btn-script").disabled = true;
     setStatus("status-script", "Gemini читає документ і пише сценарій… (10–30 с)");
     const t0 = performance.now();
