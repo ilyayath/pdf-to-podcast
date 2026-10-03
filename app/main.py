@@ -74,7 +74,7 @@ async def create_script(
     if len(data) > MAX_PDF_BYTES:
         raise HTTPException(status_code=413, detail="PDF більший за 15 МБ")
     script = _call(gen.write_script, data, minutes, focus)
-    return ScriptResponse(model=gen.text_model, script=script, tokens=gen.last_tokens)
+    return ScriptResponse(model=gen.last_model, script=script, tokens=gen.last_tokens)
 
 
 @app.post(

@@ -9,11 +9,13 @@
 """
 
 import argparse
+import logging
 import sys
 import time
 from pathlib import Path
 
 from dotenv import load_dotenv
+from google.genai import errors as genai_errors
 
 from app.podcast import ConfigError, PodcastGenerator
 from app.schemas import Script
@@ -21,6 +23,7 @@ from app.schemas import Script
 
 def main() -> int:
     load_dotenv()
+    logging.basicConfig(level=logging.WARNING, format="%(message)s")
     parser = argparse.ArgumentParser(description="PDF → Podcast (Gemini API)")
     parser.add_argument("input", type=Path, help="PDF-документ або JSON зі сценарієм")
     parser.add_argument("-m", "--minutes", type=int, default=3, help="тривалість, хв")
@@ -48,7 +51,7 @@ def main() -> int:
             print(f"{line.speaker.value}: {line.text}")
         words = sum(len(line.text.split()) for line in script.lines)
         print(
-            f"\nСценарій: {script_path} · {time.perf_counter() - t0:.1f} с · "
+            f"\nСценарій: {script_path} · {gen.last_model} · {time.perf_counter() - t0:.1f} с · "
             f"{gen.last_tokens} токенів · {len(script.lines)} реплік · {words} слів",
             file=sys.stderr,
         )
@@ -62,7 +65,7 @@ def main() -> int:
     t0 = time.perf_counter()
     out.write_bytes(gen.synthesize(script, fmt))
     print(
-        f"Готово: {out} · {time.perf_counter() - t0:.1f} с · "
+        f"Готово: {out} · {gen.last_tts_model} · {time.perf_counter() - t0:.1f} с · "
         f"тривалість {gen.last_audio_seconds:.0f} с · {out.stat().st_size / 1024 / 1024:.1f} МБ",
         file=sys.stderr,
     )
@@ -70,4 +73,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except genai_errors.APIError as exc:
+        print(f"Помилка Gemini API ({exc.code}): {exc.message}", file=sys.stderr)
+        sys.exit(2)

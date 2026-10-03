@@ -6,18 +6,27 @@
 """
 
 import io
+import logging
 import os
 import re
 import wave
 
 import lameenc
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
 from app.schemas import Line, Script, Speaker
 
+log = logging.getLogger(__name__)
+
 DEFAULT_TEXT_MODEL = "gemini-3.8-flash"
 DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
+
+# Запасні моделі: якщо основна перевантажена (503) чи вичерпано її ліміт (429)
+TEXT_FALLBACKS = ["gemini-3.5-flash", "gemini-2.5-flash"]
+TTS_FALLBACKS = ["gemini-3.8-flash-lite-tts"]  # старіші TTS не підтримують speech_metadata
+RETRYABLE_CODES = {429, 500, 503}
 
 MP3_BITRATE = 64
 PAUSE_SECONDS = 0.4
@@ -65,6 +74,10 @@ FOCUS_PROMPT = """
 
 class ConfigError(RuntimeError):
     """API-ключ не задано."""
+
+
+def _with_fallbacks(primary: str, fallbacks: list[str]) -> list[str]:
+    return [primary] + [m for m in fallbacks if m != primary]
 
 
 def chunk_lines(lines: list[Line], limit: int | None = None) -> list[list[Line]]:
@@ -148,6 +161,19 @@ class PodcastGenerator:
         self.client = genai.Client(api_key=api_key)
         self.last_tokens: int | None = None
         self.last_audio_seconds: float | None = None
+        self.last_model = self.text_model
+        self.last_tts_model = self.tts_model
+
+    def _generate(self, models: list[str], **kwargs) -> tuple[str, types.GenerateContentResponse]:
+        """Викликає першу модель зі списку; якщо вона перевантажена чи вичерпано ліміт — наступну."""
+        for model in models:
+            try:
+                return model, self.client.models.generate_content(model=model, **kwargs)
+            except genai_errors.APIError as exc:
+                if exc.code not in RETRYABLE_CODES or model == models[-1]:
+                    raise
+                log.warning("Модель %s недоступна (%s), пробую наступну", model, exc.code)
+        raise ValueError("Порожній список моделей")
 
     def write_script(self, pdf: bytes, minutes: int = 3, focus: str | None = None) -> Script:
         """Крок 1: PDF -> сценарій. Модель отримує PDF як файл, без попереднього парсингу.
@@ -163,8 +189,8 @@ class PodcastGenerator:
         )
         if focus and focus.strip():
             prompt += FOCUS_PROMPT.format(focus=focus.strip())
-        response = self.client.models.generate_content(
-            model=self.text_model,
+        self.last_model, response = self._generate(
+            _with_fallbacks(self.text_model, TEXT_FALLBACKS),
             contents=[types.Part.from_bytes(data=pdf, mime_type="application/pdf"), prompt],
             config=types.GenerateContentConfig(
                 temperature=0.8,
@@ -192,10 +218,13 @@ class PodcastGenerator:
 
         pcm = bytearray()
         rate = 24000
+        models = _with_fallbacks(self.tts_model, TTS_FALLBACKS)
         for i, chunk in enumerate(chunk_lines(script.lines)):
-            response = self.client.models.generate_content(
-                model=self.tts_model, contents=to_tts_contents(chunk), config=config
+            self.last_tts_model, response = self._generate(
+                models, contents=to_tts_contents(chunk), config=config
             )
+            # решту частин озвучуємо тією ж моделлю, щоб голоси звучали однаково
+            models = _with_fallbacks(self.last_tts_model, models)
             audio = response.candidates[0].content.parts[0].inline_data
             rate = _sample_rate(audio.mime_type)
             if i:

@@ -33,6 +33,7 @@ SCRIPT = Script(
 def gen():
     mock = MagicMock(spec=PodcastGenerator)
     mock.text_model = "gemini-test"
+    mock.last_model = "gemini-test"
     mock.last_tokens = 1234
     app.dependency_overrides[get_generator] = lambda: mock
     yield mock
@@ -214,3 +215,41 @@ def test_write_script_adds_focus_only_when_given(focus, expected):
     prompt = gen.client.models.generate_content.call_args.kwargs["contents"][1]
     assert ("«розділ 3»" in prompt) is expected
     assert "не пиши «з нами" in prompt  # документ не «гість» випуску
+
+
+def _fake_response(**kwargs):
+    return MagicMock(parsed=SCRIPT, text="", usage_metadata=None, **kwargs)
+
+
+def test_falls_back_when_model_overloaded():
+    gen = _generator_with_fake_client()
+    overloaded = genai_errors.ServerError(
+        503, {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}}
+    )
+    gen.client.models.generate_content.side_effect = [overloaded, _fake_response()]
+
+    gen.write_script(b"%PDF")
+
+    models = [c.kwargs["model"] for c in gen.client.models.generate_content.call_args_list]
+    assert models == [gen.text_model, "gemini-3.5-flash"]
+    assert gen.last_model == "gemini-3.5-flash"
+
+
+def test_no_fallback_on_client_error():
+    gen = _generator_with_fake_client()
+    gen.client.models.generate_content.side_effect = genai_errors.ClientError(
+        400, {"error": {"code": 400, "message": "bad request", "status": "INVALID_ARGUMENT"}}
+    )
+    with pytest.raises(genai_errors.ClientError):
+        gen.write_script(b"%PDF")
+    assert gen.client.models.generate_content.call_count == 1
+
+
+def test_all_models_overloaded_raises_last_error():
+    gen = _generator_with_fake_client()
+    gen.client.models.generate_content.side_effect = genai_errors.ServerError(
+        503, {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}}
+    )
+    with pytest.raises(genai_errors.ServerError):
+        gen.write_script(b"%PDF")
+    assert gen.client.models.generate_content.call_count == 3  # основна + 2 запасні
