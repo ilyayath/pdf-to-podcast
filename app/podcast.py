@@ -10,6 +10,7 @@ import os
 import re
 import wave
 
+import lameenc
 from google import genai
 from google.genai import types
 
@@ -17,6 +18,9 @@ from app.schemas import Line, Script, Speaker
 
 DEFAULT_TEXT_MODEL = "gemini-3.8-flash"
 DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
+
+MP3_BITRATE = 64
+PAUSE_SECONDS = 0.4
 
 VOICES = {
     Speaker.host: "Kore",
@@ -95,6 +99,20 @@ def voice(name: str) -> types.VoiceConfig:
     return types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=name))
 
 
+def silence(seconds: float, rate: int = 24000) -> bytes:
+    return b"\x00\x00" * int(seconds * rate)
+
+
+def pcm_to_mp3(pcm: bytes, rate: int = 24000) -> bytes:
+    """MP3 64 кбіт/с — для мовлення якості досить, а файл ~6 разів менший за WAV."""
+    encoder = lameenc.Encoder()
+    encoder.set_bit_rate(MP3_BITRATE)
+    encoder.set_in_sample_rate(rate)
+    encoder.set_channels(1)
+    encoder.set_quality(2)
+    return bytes(encoder.encode(pcm) + encoder.flush())
+
+
 def pcm_to_wav(pcm: bytes, rate: int = 24000) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wav:
@@ -117,6 +135,7 @@ class PodcastGenerator:
         self.tts_model = os.getenv("GEMINI_TTS_MODEL", DEFAULT_TTS_MODEL)
         self.client = genai.Client(api_key=api_key)
         self.last_tokens: int | None = None
+        self.last_audio_seconds: float | None = None
 
     def write_script(self, pdf: bytes, minutes: int = 3) -> Script:
         """Крок 1: PDF -> сценарій. Модель отримує PDF як файл, без попереднього парсингу."""
@@ -141,8 +160,8 @@ class PodcastGenerator:
             return response.parsed
         return Script.model_validate_json(response.text)
 
-    def synthesize(self, script: Script) -> bytes:
-        """Крок 2: сценарій -> WAV. Кожна частина озвучується двома голосами за один запит."""
+    def synthesize(self, script: Script, fmt: str = "mp3") -> bytes:
+        """Крок 2: сценарій -> MP3 або WAV. Кожна частина озвучується двома голосами за один запит."""
         speech = types.SpeechConfig(
             multi_speaker_voice_config=types.MultiSpeakerVoiceConfig(
                 speaker_voice_configs=[
@@ -155,11 +174,16 @@ class PodcastGenerator:
 
         pcm = bytearray()
         rate = 24000
-        for chunk in chunk_lines(script.lines):
+        for i, chunk in enumerate(chunk_lines(script.lines)):
             response = self.client.models.generate_content(
                 model=self.tts_model, contents=to_tts_contents(chunk), config=config
             )
             audio = response.candidates[0].content.parts[0].inline_data
             rate = _sample_rate(audio.mime_type)
+            if i:
+                pcm += silence(PAUSE_SECONDS, rate)  # природна пауза на стику частин
             pcm += audio.data
-        return pcm_to_wav(bytes(pcm), rate)
+        self.last_audio_seconds = len(pcm) / 2 / rate
+        if fmt == "wav":
+            return pcm_to_wav(bytes(pcm), rate)
+        return pcm_to_mp3(bytes(pcm), rate)

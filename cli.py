@@ -1,26 +1,29 @@
 """Консольна версія: PDF → сценарій → подкаст.
 
 Приклади:
-    python cli.py article.pdf                    # створить article.wav і article.json
-    python cli.py article.pdf -m 5 -o show.wav   # 5 хвилин, свій файл
+    python cli.py article.pdf                    # створить article.mp3 і article.json
+    python cli.py article.pdf -m 5 -o show.wav   # 5 хвилин, WAV
     python cli.py article.pdf --script-only      # лише сценарій, без озвучення
+    python cli.py article.json                   # озвучити готовий (відредагований) сценарій
 """
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from app.podcast import ConfigError, PodcastGenerator
+from app.schemas import Script
 
 
 def main() -> int:
     load_dotenv()
     parser = argparse.ArgumentParser(description="PDF → Podcast (Gemini API)")
-    parser.add_argument("pdf", type=Path)
+    parser.add_argument("input", type=Path, help="PDF-документ або JSON зі сценарієм")
     parser.add_argument("-m", "--minutes", type=int, default=3, help="тривалість, хв")
-    parser.add_argument("-o", "--output", type=Path, help="файл .wav")
+    parser.add_argument("-o", "--output", type=Path, help="файл .mp3 або .wav")
     parser.add_argument("--script-only", action="store_true", help="не озвучувати")
     args = parser.parse_args()
 
@@ -30,22 +33,37 @@ def main() -> int:
         print(exc, file=sys.stderr)
         return 1
 
-    print("1/2 Пишу сценарій…", file=sys.stderr)
-    script = gen.write_script(args.pdf.read_bytes(), args.minutes)
-    script_path = args.pdf.with_suffix(".json")
-    script_path.write_text(script.model_dump_json(indent=2), encoding="utf-8")
-    print(f"\n«{script.title}»\n{script.summary}\n")
-    for line in script.lines:
-        print(f"{line.speaker.value}: {line.text}")
-    print(f"\nСценарій: {script_path} ({gen.last_tokens} токенів)", file=sys.stderr)
+    if args.input.suffix.lower() == ".json":
+        script = Script.model_validate_json(args.input.read_text(encoding="utf-8"))
+    else:
+        print("1/2 Пишу сценарій…", file=sys.stderr)
+        t0 = time.perf_counter()
+        script = gen.write_script(args.input.read_bytes(), args.minutes)
+        script_path = args.input.with_suffix(".json")
+        script_path.write_text(script.model_dump_json(indent=2), encoding="utf-8")
+        print(f"\n«{script.title}»\n{script.summary}\n")
+        for line in script.lines:
+            print(f"{line.speaker.value}: {line.text}")
+        words = sum(len(line.text.split()) for line in script.lines)
+        print(
+            f"\nСценарій: {script_path} · {time.perf_counter() - t0:.1f} с · "
+            f"{gen.last_tokens} токенів · {len(script.lines)} реплік · {words} слів",
+            file=sys.stderr,
+        )
 
     if args.script_only:
         return 0
 
+    out = args.output or args.input.with_suffix(".mp3")
+    fmt = "wav" if out.suffix.lower() == ".wav" else "mp3"
     print("2/2 Озвучую…", file=sys.stderr)
-    out = args.output or args.pdf.with_suffix(".wav")
-    out.write_bytes(gen.synthesize(script))
-    print(f"Готово: {out}", file=sys.stderr)
+    t0 = time.perf_counter()
+    out.write_bytes(gen.synthesize(script, fmt))
+    print(
+        f"Готово: {out} · {time.perf_counter() - t0:.1f} с · "
+        f"тривалість {gen.last_audio_seconds:.0f} с · {out.stat().st_size / 1024 / 1024:.1f} МБ",
+        file=sys.stderr,
+    )
     return 0
 
 

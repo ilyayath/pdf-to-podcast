@@ -9,7 +9,14 @@ from fastapi.testclient import TestClient
 from google.genai import errors as genai_errors
 
 from app.main import app, get_generator
-from app.podcast import PodcastGenerator, chunk_lines, pcm_to_wav, to_tts_contents
+from app.podcast import (
+    PAUSE_SECONDS,
+    PodcastGenerator,
+    chunk_lines,
+    pcm_to_mp3,
+    pcm_to_wav,
+    to_tts_contents,
+)
 from app.schemas import Line, Script
 
 SCRIPT = Script(
@@ -73,13 +80,22 @@ def test_script_minutes_validation(client, gen):
     assert res.status_code == 422
 
 
-def test_audio_returns_wav(client, gen):
-    gen.synthesize.return_value = b"RIFF....WAVE"
+def test_audio_returns_mp3_by_default(client, gen):
+    gen.synthesize.return_value = b"ID3fake"
     res = client.post("/api/audio", json=SCRIPT.model_dump(mode="json"))
     assert res.status_code == 200
+    assert res.headers["content-type"] == "audio/mpeg"
+    assert res.content == b"ID3fake"
+    gen.synthesize.assert_called_once_with(SCRIPT, "mp3")
+
+
+def test_audio_wav_format(client, gen):
+    gen.synthesize.return_value = b"RIFF....WAVE"
+    res = client.post("/api/audio?format=wav", json=SCRIPT.model_dump(mode="json"))
     assert res.headers["content-type"] == "audio/wav"
-    assert res.content == b"RIFF....WAVE"
-    assert gen.synthesize.call_args.args[0] == SCRIPT
+    assert 'filename="podcast.wav"' in res.headers["content-disposition"]
+    gen.synthesize.assert_called_once_with(SCRIPT, "wav")
+    assert client.post("/api/audio?format=ogg", json=SCRIPT.model_dump(mode="json")).status_code == 422
 
 
 def test_audio_rejects_unknown_speaker(client, gen):
@@ -157,11 +173,20 @@ def test_synthesize_uses_two_voices_and_joins_chunks(monkeypatch):
     response.candidates[0].content.parts[0].inline_data = audio
     gen.client.models.generate_content.return_value = response
 
-    wav = gen.synthesize(SCRIPT)
+    wav = gen.synthesize(SCRIPT, "wav")
 
     calls = gen.client.models.generate_content.call_args_list
     assert len(calls) == 2
     speech = calls[0].kwargs["config"].speech_config.multi_speaker_voice_config
     assert {c.speaker for c in speech.speaker_voice_configs} == {"Олена", "Віталій"}
+    pause = int(PAUSE_SECONDS * 24000)
     with wave.open(io.BytesIO(wav)) as w:
-        assert w.getnframes() == 200
+        assert w.getnframes() == 200 + pause  # дві частини + пауза між ними
+    assert gen.last_audio_seconds == pytest.approx((200 + pause) / 24000)
+
+
+def test_pcm_to_mp3_is_smaller_than_wav():
+    pcm = bytes(range(256)) * 375  # 2 с «шуму», 16 біт 24 кГц
+    mp3 = pcm_to_mp3(pcm)
+    assert mp3[:3] == b"ID3" or mp3[0] == 0xFF  # заголовок MP3
+    assert len(mp3) < len(pcm_to_wav(pcm)) / 4

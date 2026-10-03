@@ -67,7 +67,7 @@
   <div class="card hidden" id="card-audio">
     <h2>3. Подкаст</h2>
     <audio id="player" controls></audio>
-    <a id="download" class="download" download="podcast.wav">Завантажити WAV</a>
+    <a id="download" class="download" download="podcast.mp3">Завантажити MP3</a>
   </div>
 </main>
 <script>
@@ -136,11 +136,12 @@
         body: JSON.stringify(script),
       });
       if (!res.ok) throw new Error(await errorText(res));
-      const url = URL.createObjectURL(await res.blob());
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
       $("player").src = url;
       $("download").href = url;
       $("card-audio").classList.remove("hidden");
-      setStatus("status-audio", `Готово за ${((performance.now() - t0) / 1000).toFixed(1)} с`);
+      setStatus("status-audio", `Готово за ${((performance.now() - t0) / 1000).toFixed(1)} с · ${(blob.size / 1024 / 1024).toFixed(1)} МБ`);
     } catch (e) {
       setStatus("status-audio", "Помилка: " + e.message, true);
     } finally {
