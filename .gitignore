@@ -12,3 +12,4 @@ task.md
 # Згенеровані подкасти
 *.wav
 *.mp3
+!examples/*.mp3
