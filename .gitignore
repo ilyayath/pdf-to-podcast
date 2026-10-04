@@ -4,6 +4,14 @@ __pycache__/
 .pytest_cache/
 .env
 .idea/
+# LaTeX build artifacts
+presentation/*.aux
+presentation/*.log
+presentation/*.nav
+presentation/*.out
+presentation/*.snm
+presentation/*.toc
+presentation/*.vrb
 
 # Матеріали завдання (не частина проєкту)
 slides1-tk42.pdf
@@ -11,5 +19,6 @@ task.md
 
 # Згенеровані подкасти
 *.wav
+presentation/speech.md
 *.mp3
 !examples/*.mp3
